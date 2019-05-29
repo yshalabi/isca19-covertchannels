@@ -14,12 +14,26 @@
 #include <string.h>
 #include <inttypes.h>
 #include <time.h>
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <sys/mman.h>
+#include <fcntl.h>
+#include <unistd.h>
+#include <errno.h>
+#include <string.h>
+
 
 #ifndef UTIL_H_
 #define UTIL_H_
 
 #define ADDR_PTR uint64_t
 #define CYCLES uint32_t
+
+struct state {
+	ADDR_PTR addr;
+	int interval;
+	int wait_cycles_between_measurements;
+};
 
 struct Node {
     ADDR_PTR addr;

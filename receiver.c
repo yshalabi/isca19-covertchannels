@@ -1,27 +1,5 @@
 #include "util.h"
 
-#include <stdio.h>
-#include <stdlib.h>
-#include <sys/types.h>
-#include <sys/stat.h>
-#include <sys/mman.h>
-#include <fcntl.h>
-#include <unistd.h>
-#include <errno.h>
-#include <string.h>
-
-
-/*
- * Execution state of the program, with the variables
- * that we need to pass around the various functions.
- */
-struct state {
-    char *buffer;
-    struct Node *probing_set;
-    int interval;
-    int wait_cycles_between_measurements;
-    bool debug;
-};
 
 /*
  * Parses the arguments and flags of the program and initializes the struct state
@@ -32,12 +10,6 @@ int init_state(struct state *state, int argc, char **argv)
 	if (argc<2) {
 		return -1;
 	}   
-
-	state->buffer = NULL;
-
-	// Set some default state values.
-	state->debug = false;
-	state->probing_set = NULL;
 
 	// These numbers may need to be tuned up to the specific machine in use
 	// NOTE: Make sure that interval is the same in both sender and receiver
@@ -64,9 +36,8 @@ int init_state(struct state *state, int argc, char **argv)
 		return -1;
 	}
 		
-	ADDR_PTR addr = (ADDR_PTR) mapaddr + offset; 	
-	append_string_to_linked_list(&state->probing_set, addr);
-	printf("Address Flushing = %lx\n",addr);
+	state->addr = (ADDR_PTR) mapaddr + offset; 	
+	printf("Address Flushing = %lx\n",state->addr);
 
 	return 0;
 }
@@ -84,7 +55,6 @@ bool detect_bit(struct state *state, bool first_bit)
     start_t = clock();
     curr_t = start_t;
 
-//	printf("Start Clock() = %ld\n",start_t);
 
     int misses = 0;
     int hits = 0;
@@ -92,21 +62,17 @@ bool detect_bit(struct state *state, bool first_bit)
 
     // This is high because the misses caused by clflush
     // usually cause an access time larger than 150 cycles
-    int misses_time_threshold = 150;
+    int misses_time_threshold = 100;
 
     while ((curr_t - start_t) < state->interval) {
-        struct Node *current = state->probing_set;
-        while (current != NULL && (curr_t - start_t) < state->interval) {
-            ADDR_PTR addr = current->addr;
-            CYCLES time = measure_one_block_access_time(addr);
+            CYCLES time = measure_one_block_access_time(state->addr); // measured in clock cycles (while clock() measured in clock ticks -- 1 tick can be many cycles)
+
             // When the access time is larger than 1000 cycles,
             // it is usually due to a disk miss. We exclude such misses
             // because they are not caused by clflush.
             if (time < 1000) {
                 total_measurements++;
                 if (time > misses_time_threshold) {
-//		printf("Access = %d\n",time);
-//		printf("Access Clock() = %ld\n",clock());
                     misses++;
                 } else {
                     hits++;
@@ -114,14 +80,12 @@ bool detect_bit(struct state *state, bool first_bit)
             }
 
             curr_t = clock();
-            current = current->next;
 
             // Busy loop to give time to the sender to flush the cache
             for (int junk = 0; junk < state->wait_cycles_between_measurements &&
                                (curr_t - start_t) < state->interval; junk++) {
                 curr_t = clock();
             }
-        }
     }
 
     // This is what allows the receiver to synchronize with the sender.
@@ -161,10 +125,7 @@ bool detect_bit(struct state *state, bool first_bit)
         // and then wait at the end of the cycle for an amount of time equal to the
         // one between the dot '.' and the '|' that precedes it in the drawing.
         double waiting_time = state->interval * ratio;
-        while (clock() - start_t < waiting_time) {}
-        if (state->debug) {
-            printf("\n[Synchronized forward of %.2f]\n", ratio);
-        }
+        while (clock() - start_t < waiting_time) {} //spin
     }
 
     // If first_bit is true, use the relaxed threshold of misses to identify a 1.
@@ -172,10 +133,6 @@ bool detect_bit(struct state *state, bool first_bit)
     // total measurements.
     bool ret = ((first_bit && misses > miss_threshold) ||
                 (!first_bit && misses > (float) total_measurements / 2.0));
-
-    if (state->debug) {
-        printf("Misses: %d out of %d --> %d\n", misses, total_measurements, ret);
-    }
 
     return ret;
 }
@@ -224,10 +181,6 @@ int main(int argc, char **argv)
         // Finally, when a NULL byte is received the receiver exits the
         // message receiving mode and restarts from the base state.
         if (flip_sequence == 0 && current == 1 && previous == 1) {
-            if (state.debug) {
-                printf("Start sequence fully detected.\n\n");
-            }
-
             int binary_msg_len = 0;
             int strike_zeros = 0;
             for (int i = 0; i < max_buffer_len; i++) {
@@ -240,19 +193,12 @@ int main(int argc, char **argv)
                 } else {
                     msg_ch[i] = '0';
                     if (++strike_zeros >= 8 && i % 8 == 0) {
-                        if (state.debug) {
-                            printf("String finished\n");
-                        }
-
                         break;
                     }
                 }
             }
 
             msg_ch[binary_msg_len - 8] = '\0';
-            if (state.debug) {
-                printf("Binary string received %s\n", msg_ch);
-            }
 
             int ascii_msg_len = binary_msg_len / 8;
             char msg[ascii_msg_len];
@@ -275,120 +221,6 @@ int main(int argc, char **argv)
 
     printf("Receiver finished\n");
     return 0;
-}
-
-
-//Appendix
-void depr_init_state(struct state *state, int argc, char **argv)
-{
-
-    // The following calculations are based on the paper:
-    //      C5: Cross-Cores Cache Covert Channel (dimva 2015)
-/*
-    int n = CACHE_WAYS_L1;
-    int o = 6;                          // log_2(64), where 64 is the line size
-    int s = 6;                          // log_2(64), where 64 is the number of cache sets in the L1
-    int two_o_s = ipow(2, o);       // 64
-    int b = 2 * n* ipow(2,s) * two_o_s;            // 32,768 * 2
-*/
-    int n = CACHE_WAYS_L3;
-    int o = 6;                          // log_2(64), where 64 is the line size
-    int s = 15;                         // log_2(8192), where 8192 is the number of cache sets
-    int two_o = ipow(2, o);             // 64
-    int two_o_s = ipow(2, s) * two_o;   // 524,288
-    int b = n * two_o_s;                // size in bytes of the LLC = 8,388,608
-
-
-    // Allocate a buffer twice the size of the L1 cache
-    state->buffer = malloc((size_t) b);
-
-    // Set some default state values.
-    state->debug = false;
-    state->probing_set = NULL;
-
-    // These numbers may need to be tuned up to the specific machine in use
-    // NOTE: Make sure that interval is the same in both sender and receiver
-    state->interval = 160;
-    state->wait_cycles_between_measurements = 30;
-
-    // Construct the probing_set by taking the addresses that have cache set index 0
-    // There will be at least one of such addresses in our buffer.
-/*	
-    for (int i = 0; i < 2 * ipow(2,s); i++) {
-        ADDR_PTR addr = (ADDR_PTR) (state->buffer + two_o_s * i);
-//	printf("Address cache set index = %#08x\n",get_cache_set_index(addr) & 0x3F);
-        if ((get_cache_set_index(addr) & (0x3F) )== 0x0) {
-	printf("Address cache set index = %#08x\n",addr);
-            append_string_to_linked_list(&state->probing_set, addr);
-        }
-    }
-*/
-
-	uint64_t wantSet = 0;
-	if (argc>1) {
-//		wantSet = atoi(argv[1]);
-
-		int inFile = open(argv[1],O_RDONLY);
-		if (inFile == -1) {
-			printf("failed to open file\n");
-		}	
-
-		int size = 4096;
-		void *mapaddr = mmap(NULL, size, PROT_READ, MAP_SHARED, inFile, 0);
-		printf("Mapped at %p\n", mapaddr);
-	
-		if (mapaddr == (void*) -1 ) {
-			printf("failed to map address\n");
-		}
-			
-		ADDR_PTR addr = (ADDR_PTR) mapaddr; 	
-                append_string_to_linked_list(&state->probing_set, addr);
-		return;
-	}
-
-
-
-	bool found = false;
-    for (int set_index = 0; set_index < CACHE_SETS_L3; set_index++) {
-        for (int line_index = 0; line_index < CACHE_WAYS_L3; line_index++) {
-
-            ADDR_PTR addr = (ADDR_PTR) (state->buffer + set_index * two_o + line_index * two_o_s);
-            if (get_cache_set_index(addr) == wantSet) {
-	printf("Address cache set index = %lx\n",addr);
-                append_string_to_linked_list(&state->probing_set, addr);
-		found = true;
-		break;
-            }
-        }
-	if (found) {
-		break;
-	}
-    }
-
-
-    // Parse the command line flags
-    //      -d is used to enable the debug prints
-    //      -i is used to specify a custom value for the time interval
-    //      -w is used to specify a custom number of wait cycles between two probes
-    int option;
-    while ((option = getopt(argc, argv, "di:w:")) != -1) {
-        switch (option) {
-            case 'd':
-                state->debug = true;
-                break;
-            case 'i':
-                state->interval = atoi(optarg);
-                break;
-            case 'w':
-                state->wait_cycles_between_measurements = atoi(optarg);
-                break;
-            case '?':
-                fprintf(stderr, "Unknown option character `\\x%x'.\n", optopt);
-                exit(1);
-            default:
-                exit(1);
-        }
-    }
 }
 
 
