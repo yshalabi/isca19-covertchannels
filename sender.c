@@ -54,9 +54,8 @@ void send_bit(bool one, struct state *state)
 
     if (one) {
         ADDR_PTR addr = state->addr;
-        while ((curr_t - start_t) < state->interval) {
+        while ((clock() - start_t) < state->interval) {
                 clflush(addr);
-                curr_t = clock();
         }
 
     } else {
