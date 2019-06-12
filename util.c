@@ -21,6 +21,14 @@ CYCLES measure_one_block_access_time(ADDR_PTR addr)
     return cycles;
 }
 
+CYCLES rdtscp(void) {
+	CYCLES cycles;
+	asm volatile ("rdtscp"
+	: /* outputs */ "=a" (cycles));
+
+	return cycles;
+}
+
 /*
  * Computes base to the exp.
  */

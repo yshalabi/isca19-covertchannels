@@ -1,5 +1,6 @@
 #include "util.h"
 
+int global_offset = 0;
 
 /*
  * Parses the arguments and flags of the program and initializes the struct state
@@ -13,8 +14,8 @@ int init_state(struct state *state, int argc, char **argv)
 
 	// These numbers may need to be tuned up to the specific machine in use
 	// NOTE: Make sure that interval is the same in both sender and receiver
-	state->interval = 160;
-	state->wait_cycles_between_measurements = 30;
+	state->interval = 40000;
+	state->wait_cycles_between_measurements = 3000;
 
 	int offset = 0;
 	if (argc>2) {
@@ -51,90 +52,42 @@ int init_state(struct state *state, int argc, char **argv)
  */
 bool detect_bit(struct state *state, bool first_bit)
 {
-    clock_t start_t, curr_t;
-    start_t = clock();
-    curr_t = start_t;
+	uint32_t mask = 0x4000;
+	uint32_t threshold = 200;
+	while((rdtscp() & mask) < threshold);
 
+	int misses = 0;
+	int hits = 0;
+	int total_measurements = 0;
 
-    int misses = 0;
-    int hits = 0;
-    int total_measurements = 0;
+	// This is high because the misses caused by clflush
+	// usually cause an access time larger than 150 cycles
+	int misses_time_threshold = 70;
 
-    // This is high because the misses caused by clflush
-    // usually cause an access time larger than 150 cycles
-    int misses_time_threshold = 100;
+	CYCLES start_t = rdtscp();
+	while ((rdtscp() - start_t) < state->interval) {
+		CYCLES time = measure_one_block_access_time(state->addr); 
 
-    while ((curr_t - start_t) < state->interval) {
-            CYCLES time = measure_one_block_access_time(state->addr); // measured in clock cycles (while clock() measured in clock ticks -- 1 tick can be many cycles)
+		// When the access time is larger than 1000 cycles,
+		// it is usually due to a disk miss. We exclude such misses
+		// because they are not caused by clflush.
+		if (time < 1000) {
+			total_measurements++;
+			if (time > misses_time_threshold) {
+				misses++;
+			} else {
+				hits++;
+			}
+		}
 
-            // When the access time is larger than 1000 cycles,
-            // it is usually due to a disk miss. We exclude such misses
-            // because they are not caused by clflush.
-            if (time < 1000) {
-                total_measurements++;
-                if (time > misses_time_threshold) {
-                    misses++;
-                } else {
-                    hits++;
-                }
-            }
+		// Busy loop to give time to the sender to flush the cache
+		CYCLES wait_t = rdtscp();
+		while((rdtscp() - wait_t) < state->wait_cycles_between_measurements &&
+			       (rdtscp() - start_t) < state->interval);
+	}
 
-            curr_t = clock();
-
-            // Busy loop to give time to the sender to flush the cache
-            for (int junk = 0; junk < state->wait_cycles_between_measurements &&
-                               (curr_t - start_t) < state->interval; junk++) {
-                curr_t = clock();
-            }
-    }
-
-    // This is what allows the receiver to synchronize with the sender.
-    // It only happens if the first_bit flag is true.
-    //
-    // We start by computing a relaxed miss_threshold.
-    // Heuristically, this is about 13% of the measurements.
-    double miss_threshold = (float) total_measurements / 8.0;
-
-    // Then, if the number of misses is higher than this miss_threshold
-    if (first_bit && misses > miss_threshold) {
-        start_t = clock();
-	//printf("Total = %d, Misses = %d, Threshold = %f\n",total_measurements,misses,miss_threshold);
-        // We compute the number of misses that we instead would expect
-        // to count when the sender is flushing.
-        // Heuristically, this is about 83% of the measurements.
-        double expected_for_a_one = (float) total_measurements / 1.2;
-
-        // Then we compute of what fraction of 1 interval we are
-        // out of sync compared to the sender
-        double ratio = (1 - misses / expected_for_a_one);
-
-        // Finally, we wait for that fraction of interval so that we
-        // know that we will be synced at the start of the next interval.
-        //
-        // This is easier to understand on a whiteboard, but here is a
-        // drawing attempt:
-        //
-        // Sender clock:
-        //     |           |           |           |
-        //
-        // Receiver clock:
-        // |           |   .       |   |           |
-        //                   ⌙ here the receiver is out of sync
-        //
-        // However, he can count the ratio of misses got versus misses expected,
-        // and then wait at the end of the cycle for an amount of time equal to the
-        // one between the dot '.' and the '|' that precedes it in the drawing.
-        double waiting_time = state->interval * ratio;
-        while (clock() - start_t < waiting_time) {} //spin
-    }
-
-    // If first_bit is true, use the relaxed threshold of misses to identify a 1.
-    // Otherwise, consider a one only when number of misses is more than half of the
-    // total measurements.
-    bool ret = ((first_bit && misses > miss_threshold) ||
-                (!first_bit && misses > (float) total_measurements / 2.0));
-
-    return ret;
+	bool ret =  misses > (float) total_measurements / 2.0;
+	return ret;
 }
 
 // This is the only hardcoded variable which defines the max size of a message

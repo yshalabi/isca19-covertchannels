@@ -13,7 +13,7 @@ int init_state(struct state *state, int argc, char **argv)
 
 	// This number may need to be tuned up to the specific machine in use
 	// NOTE: Make sure that interval is the same in both sender and receiver
-	state->interval = 160;
+	state->interval = 40000;
 
 	int size = 4096;
 	int offset = 0;
@@ -48,20 +48,22 @@ int init_state(struct state *state, int argc, char **argv)
  */
 void send_bit(bool one, struct state *state)
 {
-    clock_t start_t;
+	uint32_t mask = 0x4000;
+	uint32_t threshold = 200;
+	while((rdtscp() & mask) < threshold);
 
-    start_t = clock();
+	CYCLES start_t = rdtscp();
 
-    if (one) {
-        ADDR_PTR addr = state->addr;
-        while ((clock() - start_t) < state->interval) {
-                clflush(addr);
-        }
+	if (one) {
+		ADDR_PTR addr = state->addr;
+		while ((rdtscp() - start_t) < state->interval) {
+			clflush(addr);
+		}	
 
-    } else {
-        start_t = clock();
-        while (clock() - start_t < state->interval) {}
-    }
+	} else {
+		start_t = rdtscp();
+		while (rdtscp() - start_t < state->interval) {}
+	}
 }
 
 int main(int argc, char **argv)
@@ -69,7 +71,6 @@ int main(int argc, char **argv)
     // Initialize state and local variables
     struct state state;
     init_state(&state, argc, argv);
-    clock_t start_t, end_t;
     int sending = 1;
 
     printf("Please type a message (exit to stop).\n");

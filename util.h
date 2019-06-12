@@ -41,6 +41,7 @@ struct Node {
 };
 
 CYCLES measure_one_block_access_time(ADDR_PTR addr);
+CYCLES rdtscp(void);
 
 void clflush(ADDR_PTR addr);
 
