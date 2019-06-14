@@ -1,22 +1,24 @@
-# ISCA'19 - flush-reload-example
+# ISCA'19 - side-channel tutorial -- hands on session
 
 ## Compile
 
 ```sh
-make -f Makefile_sender
-make -f Makefile_receiver
+mkdir build
+cd build
+cmake ..
+make
 ```
 
-## Run
 
+## Flush-Reload covert channel
 Make sure the sender & receiver share the same file and file offset
-
+### Run
 Sender:
 ```sh
-./sender shared.txt offset
+./demos/fr-send shared.txt offset
 ```
 
 Receiver:
 ```sh
-./receiver shared.txt offset
+./demos/fr-recv shared.txt offset
 ```
